@@ -78,7 +78,6 @@ void Settings::loadSettings()
     settings.ftpUserName = m_settings.value("ftpusername").toString();
     settings.infoPath = m_settings.value("infopath").toString();
     settings.infoReleaseFilename = m_settings.value("inforeleasefilename").toString();
-    settings.infoTestFilename = m_settings.value("infotestfilename").toString();
     settings.infoUseFtp = m_settings.value("infouseftp").toBool();
     settings.rubyScriptPath = m_settings.value("rubyScriptPath").toString();
     foreach (xmlParser::osTypeEnum os, xmlParser::osTypesList()) {
@@ -99,7 +98,6 @@ void Settings::loadSettings()
         ui->infoMethod->setCurrentIndex(1);
     ui->infoPath->setText(settings.infoPath);
     ui->infoReleaseName->setText(settings.infoReleaseFilename);
-    ui->infoTestName->setText(settings.infoTestFilename);
     ui->rubyScriptPath->setText(settings.rubyScriptPath);
 }
 
@@ -120,8 +118,6 @@ void Settings::onSaveSettings()
     m_settings.setValue("infopath", settings.infoPath);
     settings.infoReleaseFilename = ui->infoReleaseName->text();
     m_settings.setValue("inforeleasefilename", settings.infoReleaseFilename);
-    settings.infoTestFilename = ui->infoTestName->text();
-    m_settings.setValue("infotestfilename", settings.infoTestFilename);
     settings.rubyScriptPath = ui->rubyScriptPath->text();
     m_settings.setValue("rubyScriptPath", settings.rubyScriptPath);
     if(ui->infoMethod->currentText()=="FTP")

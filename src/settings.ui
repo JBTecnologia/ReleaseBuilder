@@ -37,7 +37,11 @@
        <widget class="QLineEdit" name="ftpUsername"/>
       </item>
       <item row="2" column="1">
-       <widget class="QLineEdit" name="ftpPassword"/>
+       <widget class="QLineEdit" name="ftpPassword">
+        <property name="echoMode">
+         <enum>QLineEdit::Password</enum>
+        </property>
+       </widget>
       </item>
       <item row="3" column="1">
        <widget class="QLineEdit" name="ftpPath"/>
@@ -78,7 +82,7 @@
    <item>
     <widget class="QGroupBox" name="groupBox_2">
      <property name="title">
-      <string>XML Info Files</string>
+      <string>XML File</string>
      </property>
      <layout class="QFormLayout" name="formLayout_2">
       <item row="1" column="0">
@@ -100,16 +104,6 @@
       </item>
       <item row="2" column="1">
        <widget class="QLineEdit" name="infoReleaseName"/>
-      </item>
-      <item row="3" column="0">
-       <widget class="QLabel" name="label_8">
-        <property name="text">
-         <string>Test filename:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="1">
-       <widget class="QLineEdit" name="infoTestName"/>
       </item>
      </layout>
     </widget>

@@ -42,7 +42,39 @@
 namespace Ui {
 class MainWindow;
 }
-class TableWidgetData;
+class TableWidgetData : public QObject
+{
+    Q_OBJECT
+public:
+    enum action {ACTION_NONE, ACTION_DELETE_FROM_SERVER, ACTION_COPY_TO_SERVER, ACTION_CHANGED_METADATA };
+    struct dataActionStruct
+    {
+        xmlParser::softData data;
+        TableWidgetData::action action;
+        bool operator==(const dataActionStruct& other)
+        {
+            return other.action == action &&
+            other.data.date == data.date &&
+            other.data.hwType == data.hwType &&
+            other.data.md5 == data.md5 &&
+            other.data.name == data.name &&
+            other.data.osType == data.osType &&
+            other.data.packageLink == data.packageLink &&
+            other.data.releaseLink == data.releaseLink &&
+            other.data.scriptLink == data.scriptLink &&
+            other.data.type == data.type &&
+            other.data.uavHash == data.uavHash;
+        }
+    };
+
+    TableWidgetData(QObject *parent, QTableWidget* table, QList<xmlParser::softData> data);
+    QTableWidget *table;
+    QHash<int, dataActionStruct> dataActionPerItem;
+signals:
+    void currentRowChanged(int);
+private slots:
+    void onCurrentCellChanged(int,int,int,int);
+};
 
 class MainWindow : public QMainWindow
 {
@@ -56,16 +88,19 @@ private:
     enum status {STATUS_IDLE                                        = 0x00000000,
                  STATUS_NEW_SYSTEM                                  = 0x00000001,
                  STATUS_FETCHING_INFO_FILE                          = 0x00000010,
-                 STATUS_EDITING_TEST_RELEASE_FROM_TEST              = 0x00000100,
-                 STATUS_EDITING_TEST_RELEASE_FROM_RELEASE           = 0x00001000,
-                 STATUS_CREATING_ITEM, STATUS_PROCESSING_NEW_ITEM   = 0x00010000,
+                 STATUS_EDITING_RELEASE                             = 0x00000100,
+                 STATUS_CREATING_ITEM                               = 0x00001000,
+                 STATUS_PROCESSING_NEW_ITEM                         = 0x00010000,
                  STATUS_PARSING_INFO_FILE                           = 0x00100000};
     void fillTable(TableWidgetData *);
     Ui::MainWindow *ui;
     webFileUtils *fileUtils;
     xmlParser *parser;
     TableWidgetData *releaseTable;
-    TableWidgetData *oldReleasesTable;
+    TableWidgetData *testReleaseTable;
+    TableWidgetData *oldReleaseTable;
+    int getFirstFreeIndex(TableWidgetData *data);
+    int getFirstFreeIndex(QHash<int, TableWidgetData::dataActionStruct> &data);
     status currentStatus;
     status oldStatus;
     void processStatusChange(status newStatus);
@@ -83,8 +118,15 @@ private:
     bool saveDownloadedFile(QByteArray data, QString path, QString fileName);
     QString currentFilename;
     bool ftpLogin();
+    bool ftpCreateDirectory(QString dir);
+    QEventLoop ftpDirCheckEventLoop;
+    QList<int> ftpDirsCheckOperations;
+    QList<int> ftpMkDirOperations;
+    QList <QUrlInfo> ftpLastListing;
+    bool lastFtpOperationSuccess;
+    void fillComboBoxes();
+    QString calculateMD5(QString filename);
 private slots:
-    void t(xmlParser::softData d);
     void onFetchButtonPressed();
     void onPushButtonPressed();
     void onMakeReleaseButtonPressed();
@@ -102,21 +144,6 @@ private slots:
     bool processInformationFile(QByteArray array);
     void onComboboxesCurrentChanged(int index);
     void onXMLParserMessage(QString text);
-};
-
-class TableWidgetData : public QObject
-{
-    Q_OBJECT
-public:
-    enum action {ACTION_NONE, ACTION_DELETE_FROM_SERVER, ACTION_COPY_TO_SERVER, ACTION_CHANGED_METADATA };
-    TableWidgetData(QObject *parent, QTableWidget* table, QList<xmlParser::softData> data);
-    QTableWidget *table;
-    QList<xmlParser::softData> data;
-    QHash<int, TableWidgetData::action> actionPerItem;
-signals:
-    void currentRowChanged(int);
-    void currentItemChanged(xmlParser::softData);
-private slots:
-    void onCurrentCellChanged(int,int,int,int);
+    void onftpListInfo(QUrlInfo);
 };
 #endif // MAINWINDOW_H

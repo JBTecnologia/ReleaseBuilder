@@ -49,7 +49,6 @@ public:
         QString ftpPath;
         QString infoPath;
         QString infoReleaseFilename;
-        QString infoTestFilename;
         QString rubyScriptPath;
         bool infoUseFtp;
         QHash<xmlParser::osTypeEnum, QString> updaterScriptPath;

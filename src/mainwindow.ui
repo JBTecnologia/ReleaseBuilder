@@ -111,16 +111,6 @@
        </widget>
       </item>
       <item>
-       <widget class="QCheckBox" name="testReleaseCB">
-        <property name="enabled">
-         <bool>false</bool>
-        </property>
-        <property name="text">
-         <string>Test Release</string>
-        </property>
-       </widget>
-      </item>
-      <item>
        <widget class="QToolButton" name="deleteTB">
         <property name="enabled">
          <bool>false</bool>
@@ -342,6 +332,76 @@
        <layout class="QVBoxLayout" name="verticalLayout_2">
         <item>
          <widget class="QTableWidget" name="featuredReleasesTable">
+          <property name="editTriggers">
+           <set>QAbstractItemView::NoEditTriggers</set>
+          </property>
+          <property name="selectionBehavior">
+           <enum>QAbstractItemView::SelectRows</enum>
+          </property>
+          <property name="sortingEnabled">
+           <bool>true</bool>
+          </property>
+          <column>
+           <property name="text">
+            <string>Type</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>OS</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>HW Type</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>Date</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>Name</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>Package Link</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>Release Link</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>Script Link</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>UAVO Hash</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>MD5</string>
+           </property>
+          </column>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="test">
+       <attribute name="title">
+        <string>Test</string>
+       </attribute>
+       <layout class="QVBoxLayout" name="verticalLayout_7">
+        <item>
+         <widget class="QTableWidget" name="testReleasesTable">
           <property name="editTriggers">
            <set>QAbstractItemView::NoEditTriggers</set>
           </property>

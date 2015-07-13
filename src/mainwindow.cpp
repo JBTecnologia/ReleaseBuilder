@@ -1,7 +1,7 @@
 /**
  ******************************************************************************
  * @file       mainwindow.cpp
- * @author     Tau Labs, http://taulabs.org, Copyright (C) 2014
+ * @author     Tau Labs, http://taulabs.org, Copyright (C) 2015
  * @addtogroup [Group]
  * @{
  * @addtogroup MainWindow
@@ -24,6 +24,8 @@
  * 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
+//#define USE_TEST_DATA
+
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include "webfileutils.h"
@@ -35,30 +37,46 @@
 
 MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
-    ui(new Ui::MainWindow), releaseTable(NULL), oldReleasesTable(NULL)
+    ui(new Ui::MainWindow), releaseTable(NULL), oldReleaseTable(NULL)
 {
+    ui->setupUi(this);
+    //process used to run ruby script and tar
     process = new QProcess(this);
     eventLoop = new QEventLoop(this);
+    ftp = new QFtp(this);
+    fileUtils = new webFileUtils(this);
+    settings = new Settings(this);
+    parser = new xmlParser(this);
+
+    //text output channels
     process->setProcessChannelMode(QProcess::MergedChannels);
+
     connect(process, SIGNAL(readyReadStandardOutput()), this, SLOT(onReadyReadFromProcess()));
     connect(process, SIGNAL(finished(int)), eventLoop, SLOT(quit()));
-    ui->setupUi(this);
-    ftp = new QFtp(this);
+
     connect(ftp, SIGNAL(stateChanged(int)), this, SLOT(onFtpStateChanged(int)));
     connect(ftp, SIGNAL(commandFinished(int,bool)), SLOT(onFtpOperationEnded(int,bool)));
     connect(ftp, SIGNAL(dataTransferProgress(qint64,qint64)), this, SLOT(onFtpTransferProgress(qint64, qint64)));
-    fileUtils = new webFileUtils(this);
-    settings = new Settings(this);
+    connect(ftp, SIGNAL(listInfo(QUrlInfo)), this, SLOT(onftpListInfo(QUrlInfo)));
+
     connect(fileUtils, SIGNAL(downloadProgress(qint64,qint64)), this, SLOT(onDownloadProgress(qint64, qint64)));
     connect(fileUtils, SIGNAL(downloaded(bool,QByteArray,QString,QNetworkReply::NetworkError)), this, SLOT(onWebFileDownloaded(bool, QByteArray,QString,QNetworkReply::NetworkError)));
-    parser = new xmlParser(this);
-    connect(parser, SIGNAL(outputMessage(QString)), this, SLOT(onXMLParserMessage(QString)));
-    QMultiHash<bool, xmlParser::softData>  t = parser->temp();
-    releaseTable = new TableWidgetData(this, ui->featuredReleasesTable, t.values(true));
-    oldReleasesTable = new TableWidgetData(this, ui->oldReleasesTable, t.values(false));
-    this->fillTable(releaseTable);
-    this->fillTable(oldReleasesTable);
 
+    connect(parser, SIGNAL(outputMessage(QString)), this, SLOT(onXMLParserMessage(QString)));
+
+#ifdef USE_TEST_DATA
+    QMultiHash<bool, xmlParser::softData>  t = parser->temp();
+#else
+    QMultiHash<xmlParser::releaseTypeEnum, xmlParser::softData>  t;
+#endif
+    releaseTable = new TableWidgetData(this, ui->featuredReleasesTable, t.values(xmlParser::RELEASE_CURRENT));
+    oldReleaseTable = new TableWidgetData(this, ui->oldReleasesTable, t.values(xmlParser::RELEASE_OLD));
+    testReleaseTable = new TableWidgetData(this, ui->testReleasesTable, t.values(xmlParser::RELEASE_TEST));
+    this->fillTable(releaseTable);
+    this->fillTable(oldReleaseTable);
+    this->fillTable(testReleaseTable);
+
+    //widgets signals connection
     connect(ui->fetchTB, SIGNAL(clicked()), this, SLOT(onFetchButtonPressed()));
     connect(ui->createItemTB, SIGNAL(clicked()), this, SLOT(onCreateItemButtonPressed()));
     connect(ui->processNewItemTB, SIGNAL(clicked()), this, SLOT(onProcessNewItemButtonPressed()));
@@ -66,22 +84,18 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(ui->settingsTB, SIGNAL(clicked()), this, SLOT(onSettingsButtonPressed()));
     connect(ui->deleteTB, SIGNAL(clicked()), this, SLOT(onDeleteButtonPressed()));
     connect(ui->pushTB, SIGNAL(clicked()), this, SLOT(onPushButtonPressed()));
-    processStatusChange(STATUS_IDLE);
-    foreach (QString typeStr, xmlParser::osTypeToStringHash.values()) {
-        ui->osCB->addItem(typeStr, xmlParser::osTypeToStringHash.key(typeStr));
-    }
-    foreach (QString typeStr, xmlParser::softTypeToStringHash.values()) {
-        ui->typeCB->addItem(typeStr, xmlParser::softTypeToStringHash.key(typeStr));
-    }
-    foreach (QString typeStr, xmlParser::hwTypeToStringHash.values()) {
-        ui->hwCB->addItem(typeStr, xmlParser::hwTypeToStringHash.key(typeStr));
-    }
     connect(ui->osCB, SIGNAL(currentIndexChanged(int)), this, SLOT(onComboboxesCurrentChanged(int)));
     connect(ui->typeCB, SIGNAL(currentIndexChanged(int)), this, SLOT(onComboboxesCurrentChanged(int)));
     connect(ui->hwCB, SIGNAL(currentIndexChanged(int)), this, SLOT(onComboboxesCurrentChanged(int)));
+    connect(ui->makeReleaseTB, SIGNAL(clicked()), this, SLOT(onMakeReleaseButtonPressed()));
+    processStatusChange(STATUS_IDLE);
+    fillComboBoxes();
 
+    //delete /temp/realease_builder
     QDir(QDir::temp().absolutePath() + QDir::separator() + "release_builder").removeRecursively();
+
     workingRoot = QDir::temp().absolutePath() + QDir::separator() + "release_builder" + QDir::separator();
+
 }
 
 MainWindow::~MainWindow()
@@ -94,35 +108,64 @@ void MainWindow::fillTable(TableWidgetData *tableData)
     QTableWidget *table = tableData->table;
     table->clearContents();
     table->setRowCount(0);
-    QList<xmlParser::softData> data = tableData->data;
     QTableWidgetItem *item;
-    table->setRowCount(data.length());
-    for(int x = 0; x < data.length(); ++x) {
-        item = new QTableWidgetItem(xmlParser::softTypeToString(data.at(x).type), 0);
+    table->setRowCount(tableData->dataActionPerItem.values().length());
+    int index = 0;
+    foreach (int x, tableData->dataActionPerItem.keys()) {
+        item = new QTableWidgetItem(xmlParser::softTypeToString(tableData->dataActionPerItem.value(x).data.type), 0);
         item->setData(Qt::UserRole, x);
-        table->setItem(x, 0, item);
-        table->setItem(x, 2, new QTableWidgetItem(QString::number(data.at(x).hwType), 0));
-        table->setItem(x, 9, new QTableWidgetItem((data.at(x).md5), 0));
-        table->setItem(x, 4, new QTableWidgetItem((data.at(x).name), 0));
-        table->setItem(x, 1, new QTableWidgetItem(xmlParser::osTypeToString(data.at(x).osType), 0));
-        table->setItem(x, 5, new QTableWidgetItem((data.at(x).packageLink.toString()), 0));
-        table->setItem(x, 6, new QTableWidgetItem((data.at(x).releaseLink.toString()), 0));
-        table->setItem(x, 7, new QTableWidgetItem((data.at(x).scriptLink.toString()), 0));
-        table->setItem(x, 3, new QTableWidgetItem((data.at(x).date.toString()), 0));
-        table->setItem(x, 8, new QTableWidgetItem((data.at(x).uavHash), 0));
+        table->setItem(index, 0, item);
+        table->setItem(index, 2, new QTableWidgetItem(QString::number(tableData->dataActionPerItem.value(x).data.hwType), 0));
+        table->setItem(index, 9, new QTableWidgetItem((tableData->dataActionPerItem.value(x).data.md5), 0));
+        table->setItem(index, 4, new QTableWidgetItem((tableData->dataActionPerItem.value(x).data.name), 0));
+        table->setItem(index, 1, new QTableWidgetItem((xmlParser::osTypeToString(tableData->dataActionPerItem.value(x).data.osType)), 0));
+        table->setItem(index, 5, new QTableWidgetItem((tableData->dataActionPerItem.value(x).data.packageLink.toString()), 0));
+        table->setItem(index, 6, new QTableWidgetItem((tableData->dataActionPerItem.value(x).data.releaseLink.toString()), 0));
+        table->setItem(index, 7, new QTableWidgetItem((tableData->dataActionPerItem.value(x).data.scriptLink.toString()), 0));
+        table->setItem(index, 3, new QTableWidgetItem((tableData->dataActionPerItem.value(x).data.date.toString()), 0));
+        table->setItem(index, 8, new QTableWidgetItem((tableData->dataActionPerItem.value(x).data.uavHash), 0));
         QColor color;
-        if(tableData->actionPerItem.value(x, TableWidgetData::ACTION_NONE) == TableWidgetData::ACTION_CHANGED_METADATA)
+        if(tableData->dataActionPerItem.value(x).action == TableWidgetData::ACTION_CHANGED_METADATA)
             color = Qt::yellow;
-        else if(tableData->actionPerItem.value(x, TableWidgetData::ACTION_NONE) == TableWidgetData::ACTION_COPY_TO_SERVER)
+        else if(tableData->dataActionPerItem.value(x).action == TableWidgetData::ACTION_COPY_TO_SERVER)
             color = Qt::green;
-        else if(tableData->actionPerItem.value(x, TableWidgetData::ACTION_NONE) == TableWidgetData::ACTION_DELETE_FROM_SERVER)
+        else if(tableData->dataActionPerItem.value(x).action == TableWidgetData::ACTION_DELETE_FROM_SERVER)
             color = Qt::red;
-        if(tableData->actionPerItem.value(x, TableWidgetData::ACTION_NONE) != TableWidgetData::ACTION_NONE) {
+        if(tableData->dataActionPerItem.value(x).action != TableWidgetData::ACTION_NONE) {
             for(int y = 0; y < table->columnCount(); ++y) {
-                table->item(x, y)->setBackground(color);
+                table->item(index, y)->setBackground(color);
             }
         }
+        ++index;
     }
+}
+
+int MainWindow::getFirstFreeIndex(TableWidgetData *data)
+{
+    int x = 0;
+    bool found = false;
+    do
+    {
+        if(!data->dataActionPerItem.keys().contains(x))
+            found = true;
+        else
+            x = x + 1;
+    } while(!found);
+    return x;
+}
+
+int MainWindow::getFirstFreeIndex(QHash<int, TableWidgetData::dataActionStruct> &data)
+{
+    int x = 0;
+    bool found = false;
+    do
+    {
+        if(!data.keys().contains(x))
+            found = true;
+        else
+            x = x + 1;
+    } while(!found);
+    return x;
 }
 
 void MainWindow::processStatusChange(MainWindow::status newStatus)
@@ -134,20 +177,15 @@ void MainWindow::processStatusChange(MainWindow::status newStatus)
         ui->fetchTB->setEnabled(true);
         ui->deleteTB->setEnabled(false);
         ui->makeReleaseTB->setEnabled(true);
-        ui->testReleaseCB->setEnabled(true);
-        // ui->testReleaseCB->setChecked(false);
         ui->createItemFrame->setVisible(false);
         break;
     case STATUS_NEW_SYSTEM:
-    case STATUS_EDITING_TEST_RELEASE_FROM_TEST:
-    case STATUS_EDITING_TEST_RELEASE_FROM_RELEASE:
+    case STATUS_EDITING_RELEASE:
         ui->fetchTB->setEnabled(true);
         ui->deleteTB->setEnabled(true);
         ui->pushTB->setEnabled(true);
         ui->createItemTB->setEnabled(true);
-        ui->makeReleaseTB->setEnabled(false);
-        ui->testReleaseCB->setEnabled(false);
-        ui->testReleaseCB->setChecked(true);
+        ui->makeReleaseTB->setEnabled(true);
         ui->createItemFrame->setVisible(false);
         break;
     case STATUS_CREATING_ITEM:
@@ -156,10 +194,10 @@ void MainWindow::processStatusChange(MainWindow::status newStatus)
         ui->pushTB->setEnabled(false);
         ui->createItemTB->setEnabled(false);
         ui->makeReleaseTB->setEnabled(false);
-        ui->testReleaseCB->setEnabled(false);
         ui->createItemFrame->setVisible(true);
         ui->dateEdit->setDateTime(QDateTime::currentDateTime());
-        oldStatus = currentStatus;
+        if(oldStatus != STATUS_CREATING_ITEM)
+            oldStatus = currentStatus;
         break;
     case STATUS_FETCHING_INFO_FILE:
         ui->fetchTB->setEnabled(false);
@@ -167,7 +205,6 @@ void MainWindow::processStatusChange(MainWindow::status newStatus)
         ui->pushTB->setEnabled(false);
         ui->createItemTB->setEnabled(false);
         ui->makeReleaseTB->setEnabled(false);
-        ui->testReleaseCB->setEnabled(false);
         ui->createItemFrame->setVisible(false);
         oldStatus = currentStatus;
         break;
@@ -177,7 +214,6 @@ void MainWindow::processStatusChange(MainWindow::status newStatus)
         ui->pushTB->setEnabled(false);
         ui->createItemTB->setEnabled(false);
         ui->makeReleaseTB->setEnabled(false);
-        ui->testReleaseCB->setEnabled(false);
         ui->createItemFrame->setVisible(false);
         break;
     default:
@@ -185,7 +221,7 @@ void MainWindow::processStatusChange(MainWindow::status newStatus)
     }
     currentStatus = newStatus;
 }
-
+/*
 int MainWindow::addNewItem(xmlParser::softData data)
 {
     int index = -1;
@@ -201,7 +237,7 @@ int MainWindow::addNewItem(xmlParser::softData data)
         break;
     case xmlParser::SOFT_UPDATER:
     case xmlParser::SOFT_GCS:
-    case xmlParser::SOFT_TBS_AGENT:
+    case xmlParser::SOFT_SLIM_GCS:
         for (int i = 0; i < releaseTable->data.length(); ++i) {
             if(data.osType == releaseTable->data.at(i).osType && releaseTable->data.at(i).type == data.type) {
                 index = i;
@@ -213,10 +249,10 @@ int MainWindow::addNewItem(xmlParser::softData data)
         break;
     }
     if(index > -1) {
-        oldReleasesTable->data.append(releaseTable->data.at(index));
-        oldReleasesTable->actionPerItem.insert(oldReleasesTable->data.length() -1, TableWidgetData::ACTION_CHANGED_METADATA);
+        oldReleaseTable->data.append(releaseTable->data.at(index));
+        oldReleaseTable->actionPerItem.insert(oldReleaseTable->data.length() -1, TableWidgetData::ACTION_CHANGED_METADATA);
         releaseTable->data.removeAt(index);
-        this->fillTable(oldReleasesTable);
+        this->fillTable(oldReleaseTable);
     }
     releaseTable->data.append(data);
     releaseTable->actionPerItem.insert(releaseTable->data.length() - 1, TableWidgetData::ACTION_COPY_TO_SERVER);
@@ -224,24 +260,66 @@ int MainWindow::addNewItem(xmlParser::softData data)
     processStatusChange(oldStatus);
     return releaseTable->data.length() - 1;
 }
-
-void MainWindow::t(xmlParser::softData d)
+*/
+int MainWindow::addNewItem(xmlParser::softData data)
 {
-    qDebug()<<d.name;
+    ui->console->append(QString("Adding new item %0").arg(data.name));
+    QList<int> repeated;
+    switch (data.type) {
+    case xmlParser::SOFT_BOOTLOADER:
+    case xmlParser::SOFT_FIRMWARE:
+        foreach (int i, testReleaseTable->dataActionPerItem.keys()) {
+            if(data.hwType == testReleaseTable->dataActionPerItem.value(i).data.hwType && testReleaseTable->dataActionPerItem.value(i).data.type == data.type) {
+                ui->console->append(QString("Found repeated (hw and type are the same) item %0").arg(testReleaseTable->dataActionPerItem.value(i).data.name));
+                repeated.append(i);
+            }
+        }
+        break;
+    case xmlParser::SOFT_UPDATER:
+    case xmlParser::SOFT_GCS:
+    case xmlParser::SOFT_SLIM_GCS:
+        foreach (int i, testReleaseTable->dataActionPerItem.keys()) {
+            if(data.osType == testReleaseTable->dataActionPerItem.value(i).data.osType && testReleaseTable->dataActionPerItem.value(i).data.type == data.type) {
+                ui->console->append(QString("Found repeated (OS and type are the same) item %0").arg(testReleaseTable->dataActionPerItem.value(i).data.name));
+                repeated.append(i);
+            }
+        }
+        break;
+    default:
+        break;
+    }
+    if(repeated.length() > 0) {
+        foreach (int i, repeated) {
+            if(testReleaseTable->dataActionPerItem.value(i).action == TableWidgetData::ACTION_NONE) {
+                TableWidgetData::dataActionStruct temp;
+                temp.data = testReleaseTable->dataActionPerItem.value(i).data;
+                temp.action = TableWidgetData::ACTION_DELETE_FROM_SERVER;
+                testReleaseTable->dataActionPerItem.insert(i, temp);
+                ui->console->append(QString("Item %0 marked for deletion from server").arg(testReleaseTable->dataActionPerItem.value(i).data.name));
+            }
+            else if(testReleaseTable->dataActionPerItem.value(i).action == TableWidgetData::ACTION_COPY_TO_SERVER) {
+                ui->console->append(QString("Item %0 removed from list").arg(testReleaseTable->dataActionPerItem.value(i).data.name));
+                testReleaseTable->dataActionPerItem.remove(i);
+            }
+        }
+    }
+    TableWidgetData::dataActionStruct temp;
+    temp.data = data;
+    temp.action = TableWidgetData::ACTION_COPY_TO_SERVER;
+    int newIndex = getFirstFreeIndex(testReleaseTable);
+    testReleaseTable->dataActionPerItem.insert(newIndex, temp);
+    this->fillTable(testReleaseTable);
+    processStatusChange(oldStatus);
+    return newIndex;
 }
 
 void MainWindow::onFetchButtonPressed()
 {
-    QString text;
-    if(ui->testReleaseCB->isChecked())
-        text = settings->settings.infoTestFilename;
-    else
-        text = settings->settings.infoReleaseFilename;
-    ui->console->append(QString("Starting INFO file %0 download").arg(text));
+    ui->console->append(QString("Starting INFO file %0 download").arg(settings->settings.infoReleaseFilename));
     if(settings->settings.infoUseFtp) {
         if(!ftpLogin())
             return;
-        QString file = settings->settings.infoPath + text;
+        QString file = settings->settings.infoPath + settings->settings.infoReleaseFilename;
         processStatusChange(STATUS_FETCHING_INFO_FILE);
         int ftpOpId = ftp->get(file);
         ftpOperations.insert(ftpOpId, QString("Fetching file %0").arg(file));
@@ -251,9 +329,9 @@ void MainWindow::onFetchButtonPressed()
         processStatusChange(STATUS_FETCHING_INFO_FILE);
         QString file;
         if(!settings->settings.infoPath.endsWith("/"))
-            file = settings->settings.infoPath + "/" + text;
+            file = settings->settings.infoPath + "/" + settings->settings.infoReleaseFilename;
         else
-            file = settings->settings.infoPath + text;
+            file = settings->settings.infoPath + settings->settings.infoReleaseFilename;
         QString user;
         if(settings->settings.infoUseFtp)
             user = settings->settings.ftpUserName + "@";
@@ -262,135 +340,66 @@ void MainWindow::onFetchButtonPressed()
     }
 }
 
-bool MainWindow::ftpLogin() {
-    ftpCredentials::credentials cred;
-    if(!settings->settings.ftpPassword.isEmpty() && !settings->settings.ftpUserName.isEmpty()) {
-        ui->console->append(QString("Using stored FTP credentials, username=%0").arg(settings->settings.ftpUserName));
-        cred.password = settings->settings.ftpPassword;
-        cred.username = settings->settings.ftpUserName;
+
+
+void MainWindow::fillComboBoxes()
+{
+    QStringList temp = xmlParser::osTypeToStringHash.values();
+    temp.sort();
+    foreach (QString typeStr, temp) {
+        ui->osCB->addItem(typeStr, xmlParser::osTypeToStringHash.key(typeStr));
+    }
+    temp = xmlParser::softTypeToStringHash.values();
+    temp.sort();
+    foreach (QString typeStr, temp) {
+        ui->typeCB->addItem(typeStr, xmlParser::softTypeToStringHash.key(typeStr));
+    }
+    temp = xmlParser::hwTypeToStringHash.values();
+    temp.sort();
+    foreach (QString typeStr, temp) {
+        ui->hwCB->addItem(typeStr, xmlParser::hwTypeToStringHash.key(typeStr));
+    }
+}
+
+QString MainWindow::calculateMD5(QString filename)
+{
+    ui->console->append(QString("Calculating MD5 of %0").arg(filename));
+    QFile file(filename);
+    if(file.open(QIODevice::ReadOnly)) {
+        QString ret = QString(QCryptographicHash::hash((file.readAll()),QCryptographicHash::Md5).toHex());
+        ui->console->append(QString("MD5=%0").arg(ret));
+        file.close();
+        return ret;
     }
     else {
-        ftpCredentials *credentials = new ftpCredentials(this);
-        cred = credentials->getCredentials(settings->settings.ftpUserName, settings->settings.ftpPassword);
-        if(cred.remember) {
-            settings->settings.ftpUserName = cred.username;
-            settings->settings.ftpPassword = cred.password;
-            settings->saveSettings();
-        }
+        ui->console->append("Could not open file to calculate MD5");
     }
-    if(ftp->state() != QFtp::Connected) {
-        QEventLoop loop;
-        bool statusOK = false;
-        connect(ftp, SIGNAL(stateChanged(int)), &loop, SLOT(quit()));
-        connect(ftp, SIGNAL(commandFinished(int,bool)), &loop, SLOT(quit()));
-        int ftpID = ftp->connectToHost(settings->settings.ftpServerUrl);
-        ftpOperations.insert(ftpID, "Connect to host");
-        while(!statusOK) {
-            loop.exec();
-            if(ftp->error() != QFtp::NoError) {
-                return false;
-            }
-            if(ftp->state() == QFtp::Connected)
-                statusOK = true;
-        }
-        statusOK = false;
-        ftpOperations.insert(ftp->login(cred.username, cred.password), "Logging in to host");
-        while(!statusOK) {
-            loop.exec();
-            if(ftp->error() != QFtp::NoError) {
-                return false;
-            }
-            if(ftp->state() == QFtp::LoggedIn)
-                statusOK = true;
-        }
-    }
-    return true;
-}
-
-void MainWindow::onPushButtonPressed()
-{
-    QStringList filesToPush;
-    QHash<QString, QString> localFiles;
-    QStringList filesToDelete;
-    QList<TableWidgetData* > workingTablesList;
-    workingTablesList << releaseTable << oldReleasesTable;
-    QString filename;
-    foreach(TableWidgetData * workingTable, workingTablesList)
-    {
-        foreach (int i, workingTable->actionPerItem.keys()) {
-            switch (workingTable->actionPerItem.value(i)) {
-            case TableWidgetData::ACTION_DELETE_FROM_SERVER:
-                filesToDelete.append(workingTable->data.at(i).releaseLink.toString());
-                if(!workingTable->data.at(i).scriptLink.isEmpty()) {
-                    filesToDelete.append(workingTable->data.at(i).scriptLink.toString());
-                }
-                break;
-            case TableWidgetData::ACTION_COPY_TO_SERVER:
-                filesToPush.append(workingTable->data.at(i).releaseLink.toString());
-                filename = QFileInfo(workingTable->data.at(i).releaseLink.toString()).fileName();
-                localFiles.insert(workingTable->data.at(i).releaseLink.toString(), QDir::temp().absolutePath() + QDir::separator() + "release_builder" + QDir::separator() + "release" + QString::number(i) + QDir::separator() + filename);
-                if(!workingTable->data.at(i).scriptLink.isEmpty()) {
-                    filesToPush.append(workingTable->data.at(i).scriptLink.toString());
-                    filename = QFileInfo(workingTable->data.at(i).scriptLink.toString()).fileName();
-                    localFiles.insert(workingTable->data.at(i).scriptLink.toString(), QDir::temp().absolutePath() + QDir::separator() + "release_builder" + QDir::separator() + "release" + QString::number(i) + QDir::separator() + filename);
-                }
-                break;
-            default:
-                break;
-            }
-        }
-    }
-    QMultiHash<bool, xmlParser::softData> dataList;
-    foreach (xmlParser::softData data, releaseTable->data) {
-        dataList.insert(true, data);
-    }
-    foreach (xmlParser::softData data, oldReleasesTable->data) {
-        dataList.insert(false, data);
-    }
-    QString xml = parser->convertSoftDataToXMLString(dataList);
-    if(!filesToDelete.isEmpty()) {
-        ui->console->append("GOING TO DELETE FILES:");
-        foreach (QString file, filesToDelete) {
-            ui->console->append(file);
-        }
-    }
-    if(!filesToPush.isEmpty()) {
-        ui->console->append("GOING TO PUSH FILES:");
-        foreach (QString file, filesToPush) {
-            ui->console->append(file);
-        }
-    }
-    if(QMessageBox::question(this, "Please Confirm actions", "Do you really want to perform this actions?") != QMessageBox::Yes)
-        return;
-    ftpLogin();
-    foreach (QString file, filesToDelete) {
-        ftpOperations.insert(ftp->remove(file), QString("Removing file %0 from server").arg(file));
-    }
-    foreach (QString file, filesToPush) {
-        QFile m_file(localFiles.value(file));
-        if(m_file.open(QIODevice::ReadOnly)) {
-            ftpOperations.insert(ftp->put(m_file.readAll(), file), QString("Pushing file %0 to %1 on server").arg(localFiles.value(file).arg(file)));
-        }
-        else {
-            ui->console->append(QString("ERROR could not open local file %0. Skipping").arg(localFiles.value(file)));
-        }
-    }
+    return QString();
 }
 
 
-void MainWindow::onMakeReleaseButtonPressed()
-{
-
-}
 
 void MainWindow::onDeleteButtonPressed()
 {
     TableWidgetData *currentWidget;
     if(ui->tabWidget->currentIndex() == 0)
         currentWidget = releaseTable;
+    if(ui->tabWidget->currentIndex() == 1)
+        currentWidget = testReleaseTable;
     else
-        currentWidget = oldReleasesTable;
-    currentWidget->actionPerItem.insert(currentWidget->table->item(currentWidget->table->selectedItems().at(0)->row(), 0)->data(Qt::UserRole).toInt(), TableWidgetData::ACTION_DELETE_FROM_SERVER);
+        currentWidget = oldReleaseTable;
+    if(currentWidget->table->selectedItems().count() < 1)
+        return;
+    int index = currentWidget->table->item(currentWidget->table->selectedItems().at(0)->row(), 0)->data(Qt::UserRole).toInt();
+    if(currentWidget->dataActionPerItem.value(index).action != TableWidgetData::ACTION_COPY_TO_SERVER) {//TODO CHECK
+        TableWidgetData::dataActionStruct temp;
+        temp.data = currentWidget->dataActionPerItem.value(index).data;
+        temp.action = TableWidgetData::ACTION_DELETE_FROM_SERVER;
+        currentWidget->dataActionPerItem.insert(index, temp);
+    }
+    else {
+        currentWidget->dataActionPerItem.remove(currentWidget->table->item(currentWidget->table->selectedItems().at(0)->row(), 0)->data(Qt::UserRole).toInt());
+    }
     fillTable(currentWidget);
 }
 
@@ -413,6 +422,7 @@ void MainWindow::onProcessNewItemButtonPressed()
         currentFilename = filename;
         createNewItem(true);
         ui->console->append(QString("File %0 already present on temporary folder, skipping download").arg(filename));
+        return;
     }
     ui->console->append(QString("Starting %0 download").arg(ui->packageLinkLE->text()));
     QString text = ui->packageLinkLE->text();
@@ -437,20 +447,14 @@ void MainWindow::onWebFileDownloaded(bool result, QByteArray data, QString error
         ui->console->append("File download failed with error:" + errorStr);
     switch (currentStatus) {
     case STATUS_FETCHING_INFO_FILE:
-        if(!result) {
-            if(error == QNetworkReply::ContentNotFoundError) {
-                if(!ui->testReleaseCB->isChecked()) {
+        if(!result || (data.length() == 0)) {
+            if(error == QNetworkReply::ContentNotFoundError || data.length() == 0) {
                     if(QMessageBox::question(this, "Information file apears not to exist on the server", "Do you want to create one?") == QMessageBox::Yes) {
                         processStatusChange(STATUS_NEW_SYSTEM);
 
                     }
-                }
-                else
-                {
-                    ui->console->append("ERROR there is no test build available on the server");
-                    processStatusChange(oldStatus);
-                    return;
-                }
+                    else
+                        processStatusChange(oldStatus);
             }
         }
         else
@@ -528,20 +532,28 @@ bool MainWindow::createNewItem(bool alreadyDownloaded, QByteArray data, bool err
     ui->console->append("Checking if downloaded file has the necessary files");
     bool condition1 = false;
     bool condition2 = false;
+    QString condition1_text;
+    QString condition2_text;
     switch ((xmlParser::osTypeEnum)ui->osCB->currentData().toInt()) {
     case xmlParser::OS_LINUX64:
     case xmlParser::OS_LINUX32:
         switch ((xmlParser::osTypeEnum)ui->typeCB->currentData().toInt()) {
-        case xmlParser::SOFT_TBS_AGENT:
+        case xmlParser::SOFT_SLIM_GCS:
             condition1 = QDir(extractedPath + "slimgcs").exists();
-            condition2 = QFileInfo(extractedPath + "tbsagent").isSymLink();
+            condition1_text = "Directory slimgcs exists";
+            condition2 = QFileInfo(extractedPath + "tbsagent").isSymLink();//TODO
+            condition2_text = "Symlink to slimgcs binary exists";
             break;
         case xmlParser::SOFT_GCS:
             condition1 = QDir(extractedPath + "gcs").exists();
+            condition1_text = "Directory gcs exists";
             condition2 = QFileInfo(extractedPath + "taulabsgcs").isSymLink();
+            condition2_text = "Symlink to taulabsgcs binary exists";
         case xmlParser::SOFT_UPDATER:
             condition2 = QFile(completePath).exists();
+            condition2_text = completePath + "exists";
             condition1 = true;
+            condition1_text = "";
         default:
             break;
         }
@@ -558,14 +570,20 @@ bool MainWindow::createNewItem(bool alreadyDownloaded, QByteArray data, bool err
         switch ((xmlParser::softTypeEnum)ui->typeCB->currentData().toInt()) {
         case xmlParser::SOFT_FIRMWARE:
             condition2 = QFile(extractedPath + "flight" + QDir::separator() + ui->hwCB->currentText().toLower() + QDir::separator() + QString("fw_%0.tlfw").arg(ui->hwCB->currentText().toLower())).exists();
+            condition2_text = extractedPath + "flight" + QString(QDir::separator()) + ui->hwCB->currentText().toLower() + QString(QDir::separator()) + QString("fw_%0.tlfw").arg(ui->hwCB->currentText().toLower()) + " exists on the extracted directory";
             condition1 = true;
+            condition1_text = "";
+            qDebug() << "CHECKING " << condition2_text;
             break;
         case xmlParser::SOFT_BOOTLOADER:
-            condition2 = QFile(extractedPath + "flight" + QDir::separator() + ui->hwCB->currentText().toLower() + QDir::separator() + QString("bu_%0.tlfw").arg(ui->hwCB->currentText())).exists();
+            condition2 = QFile(extractedPath + "flight" + QDir::separator() + ui->hwCB->currentText().toLower() + QDir::separator() + QString("bu_%0.tlfw").arg(ui->hwCB->currentText().toLower())).exists();
+            condition2_text = extractedPath + "flight" + QString(QDir::separator()) + ui->hwCB->currentText().toLower() + QString(QDir::separator()) + QString("bu_%0.tlfw").arg(ui->hwCB->currentText().toLower()) + " exists on the extracted directory";
             condition1 = true;
+            condition1_text = "";
             break;
         case xmlParser::SOFT_SETTINGS:
             condition1 = QFile(completePath).exists();
+            condition1_text = completePath + " exists";
             condition2 = true;
         default:
             condition1 = true;
@@ -575,20 +593,34 @@ bool MainWindow::createNewItem(bool alreadyDownloaded, QByteArray data, bool err
     default:
         break;
     }
+    if(!condition1_text.isEmpty()) {
+        if(condition1)
+            ui->console->append(QString("%0? = SUCCESS").arg(condition1_text));
+        else
+            ui->console->append(QString("%0? = FAILED").arg(condition1_text));
+    }
+    if(!condition2_text.isEmpty()) {
+        if(condition2)
+            ui->console->append(QString("%0? = SUCCESS").arg(condition2_text));
+        else
+            ui->console->append(QString("%0? = FAILED").arg(condition2_text));
+    }
     if(!condition1 || !condition2) {
         ui->console->append("FAILED to find required files, ABORTING!");
         processStatusChange(STATUS_CREATING_ITEM);
         return false;
     }
+    //only if not updater binary or settings file
     if(((xmlParser::softTypeEnum)ui->typeCB->currentData().toInt()!=xmlParser::SOFT_UPDATER) && ((xmlParser::softTypeEnum)ui->typeCB->currentData().toInt()!=xmlParser::SOFT_SETTINGS) ) {
         ui->console->append("Processing INFO file");
         QFile infoFile(extractedPath + "BUILD_INFO");
         if(!infoFile.open(QIODevice::ReadOnly)) {
-            ui->console->append("FAILED to process INFO file");
+            ui->console->append("FAILED to open INFO file");
             processStatusChange(STATUS_CREATING_ITEM);
             return false;
         }
         QTextStream in(&infoFile);
+        QString tagStr, valueStr;
         while (!in.atEnd())
         {
             QString line = in.readLine();
@@ -599,27 +631,38 @@ bool MainWindow::createNewItem(bool alreadyDownloaded, QByteArray data, bool err
                 }
                 else if(l.at(0) == "GIT_HASH") {
                     gitHash = l.at(1);
+                    tagStr = "gitHash";
+                    valueStr = gitHash;
                 }
                 else if(l.at(0) == "DATE") {
                     ui->dateEdit->setDate(QDate::fromString(l.at(1), "yyyyMMdd"));
+                    tagStr = "Date";
+                    valueStr = l.at(1);
                 }
                 else if(l.at(0) == "UAVO_HASH") {
                     QString temp;
                     temp = l.at(1);
-                    ui->uavoHashLE->setText(temp.remove(",").remove("0x"));
+                    temp = temp.remove(",").remove("0x");
+                    ui->uavoHashLE->setText(temp);
+                    tagStr = "UAVO Hash";
+                    valueStr = temp;
                 }
+                ui->console->append(QString("Info file says %0=%1").arg(tagStr).arg(valueStr));
             }
         }
-        QString script = settings->settings.updaterScriptPath.value((xmlParser::osTypeEnum)ui->osCB->currentData().toInt());
-        QString updater = settings->settings.updaterBinaryPath.value((xmlParser::osTypeEnum)ui->osCB->currentData().toInt());
-        QString sourceDir;
-        QStringList arguments;
-        arguments.append("-u");
-        sourceDir = extractedPath;
-        process->setWorkingDirectory(tempDir);
-        ui->console->append(QString("Running ruby script with command:ruby %0 -p %1 -v 0 -u %2 %3 %4 ./currentbuild").arg(settings->settings.rubyScriptPath, ui->osCB->currentText().remove(" "), updater, sourceDir, script));
-        process->start(QString("ruby %0 -p %1 -v 0 -u %2 %3 %4 ./currentbuild").arg(settings->settings.rubyScriptPath, ui->osCB->currentText().remove(" "), updater, sourceDir, script));
-        eventLoop->exec();
+        ui->console->append("Done processing INFO file");
+        if((xmlParser::osTypeEnum)ui->osCB->currentData().toInt() != xmlParser::OS_EMBEDED) {
+            QString script = settings->settings.updaterScriptPath.value((xmlParser::osTypeEnum)ui->osCB->currentData().toInt());
+            QString updater = settings->settings.updaterBinaryPath.value((xmlParser::osTypeEnum)ui->osCB->currentData().toInt());
+            QString sourceDir;
+            QStringList arguments;
+            arguments.append("-u");
+            sourceDir = extractedPath;
+            process->setWorkingDirectory(tempDir);
+            ui->console->append(QString("Running ruby script with command:ruby %0 -p %1 -v 0 -u %2 %3 %4 ./currentbuild").arg(settings->settings.rubyScriptPath, ui->osCB->currentText().remove(" "), updater, sourceDir, script));
+            process->start(QString("ruby %0 -p %1 -v 0 -u %2 %3 %4 ./currentbuild").arg(settings->settings.rubyScriptPath, ui->osCB->currentText().remove(" "), updater, sourceDir, script));
+            eventLoop->exec();
+        }
     }
     QString releasePartialPath;
     releasePartialPath = ui->osCB->currentText() + QDir::separator();
@@ -633,35 +676,58 @@ bool MainWindow::createNewItem(bool alreadyDownloaded, QByteArray data, bool err
     QString releaseStoragePath = workingRoot + "releases" + QDir::separator();
     QDir().mkpath(releaseStoragePath);
     QString serverStoragePath = settings->settings.ftpPath + releasePartialPath + QDir::separator();
+    serverStoragePath = serverStoragePath.replace(QString("%0%1").arg(QDir::separator()).arg(QDir::separator()), QDir::separator());
+    ui->console->append(QString("Setting %0 to %1").arg("releasePartialPath").arg(releasePartialPath));
+    ui->console->append(QString("Setting %0 to %1").arg("releaseStoragePath").arg(releaseStoragePath));
+    ui->console->append(QString("Setting %0 to %1").arg("serverStoragePath").arg(serverStoragePath));
+
     QString file;
+    QString source, destination;
+    bool partialResult = false;
     switch ((xmlParser::softTypeEnum)ui->typeCB->currentData().toInt()) {
     case xmlParser::SOFT_BOOTLOADER:
         file = QString("bu_%0_%1.tlfw").arg(ui->dateEdit->date().toString("yyyyMMdd")).arg(gitHash);
         ui->releaseLinkE->setText(serverStoragePath + file);
-        result = QFile::copy(QString(extractedPath + "flight" + QDir::separator() + ui->hwCB->currentText().toLower() + QDir::separator() + "bu_%0.tlfw").arg(ui->hwCB->currentText().toLower()), releaseStoragePath + file);
-        ui->md5LE->setText(QString(QCryptographicHash::hash((QFile(releaseStoragePath + file).readAll()),QCryptographicHash::Md5).toHex()));
+        source = QString(extractedPath + "flight" + QDir::separator() + ui->hwCB->currentText().toLower() + QDir::separator() + "bu_%0.tlfw").arg(ui->hwCB->currentText().toLower());
+        destination = releaseStoragePath + file;
+        result = QFile::copy(source, destination);
+        ui->md5LE->setText(calculateMD5(destination));
+        ui->console->append(QString("Copying %0 to %1 RESULT=%3").arg(source).arg(destination).arg(result));
         break;
     case xmlParser::SOFT_FIRMWARE:
         file = QString("fw_%0_%1.tlfw").arg(ui->dateEdit->date().toString("yyyyMMdd")).arg(gitHash);
         ui->releaseLinkE->setText(serverStoragePath + file);
-        result = QFile::copy(QString(extractedPath + "flight" + QDir::separator() + ui->hwCB->currentText().toLower() + QDir::separator() + "fw_%0.tlfw").arg(ui->hwCB->currentText().toLower()), releaseStoragePath + file);
-        ui->md5LE->setText(QString(QCryptographicHash::hash((QFile(releaseStoragePath + file).readAll()),QCryptographicHash::Md5).toHex()));
+        source = QString(extractedPath + "flight" + QDir::separator() + ui->hwCB->currentText().toLower() + QDir::separator() + "fw_%0.tlfw").arg(ui->hwCB->currentText().toLower());
+        destination = releaseStoragePath + file;
+        result = QFile::copy(source, destination);
+        ui->md5LE->setText(calculateMD5(destination));
+        ui->console->append(QString("Copying %0 to %1 RESULT=%3").arg(source).arg(destination).arg(result));
         break;
     case xmlParser::SOFT_SETTINGS:
         file = QString( "settings_%0_%1.xml").arg(ui->dateEdit->date().toString("yyyyMMdd")).arg(gitHash);
         ui->releaseLinkE->setText(serverStoragePath + file);
-        result = QFile::copy(completePath, releaseStoragePath + file);
-        ui->md5LE->setText(QString(QCryptographicHash::hash((QFile(releaseStoragePath + file).readAll()),QCryptographicHash::Md5).toHex()));
+        source = completePath;
+        destination = releaseStoragePath + file;
+        result = QFile::copy(source, destination);
+        ui->md5LE->setText(calculateMD5(destination));
+        ui->console->append(QString("Copying %0 to %1 RESULT=%3").arg(source).arg(destination).arg(result));
         break;
     case xmlParser::SOFT_GCS:
-    case xmlParser::SOFT_TBS_AGENT:
+    case xmlParser::SOFT_SLIM_GCS:
         file = QString("%0_%1.zip").arg(ui->dateEdit->date().toString("yyyyMMdd")).arg(gitHash);
         ui->releaseLinkE->setText(serverStoragePath + file);
-        result = QFile::copy(QString(workingRoot + "currentbuild" + QDir::separator() + "app.zip"), releaseStoragePath + file);
-        ui->md5LE->setText(QString(QCryptographicHash::hash((QFile(releaseStoragePath + file).readAll()),QCryptographicHash::Md5).toHex()));
+        source = QString(workingRoot + "currentbuild" + QDir::separator() + "app.zip");
+        destination = releaseStoragePath + file;
+        result = QFile::copy(source, destination);
+        ui->console->append(QString("Copying %0 to %1 RESULT=%3").arg(source).arg(destination).arg(result));
+        ui->md5LE->setText(calculateMD5(destination));
         file = QString("%0_%1.xml").arg(ui->dateEdit->date().toString("yyyyMMdd")).arg(gitHash);
         ui->scritLinkLE->setText(serverStoragePath + file);
-        result &= QFile::copy(QString(workingRoot + "currentbuild" + QDir::separator() + "file_list.xml"), releaseStoragePath + file);
+        source = QString(workingRoot + "currentbuild" + QDir::separator() + "file_list.xml");
+        destination = releaseStoragePath + file;
+        partialResult = QFile::copy(source, destination);
+        ui->console->append(QString("Copying %0 to %1 RESULT=%3").arg(source).arg(destination).arg(partialResult));
+        result &= partialResult;
         break;
     case xmlParser::SOFT_UPDATER:
         switch ((xmlParser::osTypeEnum)ui->osCB->currentData().toInt()) {
@@ -669,8 +735,11 @@ bool MainWindow::createNewItem(bool alreadyDownloaded, QByteArray data, bool err
         case xmlParser::OS_LINUX64:
             file = QString("updater");
             ui->releaseLinkE->setText(serverStoragePath + file);
-            result = QFile::copy(completePath, releaseStoragePath + file);
-            ui->md5LE->setText(QString(QCryptographicHash::hash((QFile(releaseStoragePath + file).readAll()),QCryptographicHash::Md5).toHex()));
+            source = completePath;
+            destination = releaseStoragePath + file;
+            result = QFile::copy(source, destination);
+            ui->md5LE->setText(calculateMD5(destination));
+            ui->console->append(QString("Copying %0 to %1 RESULT=%3").arg(source).arg(destination).arg(partialResult));
             break;
             //TODO
         default:
@@ -701,6 +770,8 @@ bool MainWindow::createNewItem(bool alreadyDownloaded, QByteArray data, bool err
         int newItemIndex = addNewItem(newItem);
         QString dest = workingRoot + "release" + QString::number(newItemIndex);
         ui->console->append(QString("Moving temporary directory %0 to %1").arg(original, dest));
+        if(QDir(dest).exists())
+            QDir(dest).removeRecursively();
         if( !dir.rename( original, dest ) ){
             ui->console->append("Moving failed, Aborting");
             processStatusChange(oldStatus);
@@ -787,7 +858,18 @@ void MainWindow::onFtpOperationEnded(int opID, bool error)
         else
             ui->console->append("FTP operation was successfull");
     }
+    if(ftpDirsCheckOperations.contains(opID)) {
+        ftpDirsCheckOperations.removeAll(opID);
+        lastFtpOperationSuccess = !error;
+        ftpDirCheckEventLoop.quit();
+    }
+    if(ftpMkDirOperations.contains(opID)) {
+        ftpMkDirOperations.removeAll(opID);
+        lastFtpOperationSuccess = !error;
+        ftpDirCheckEventLoop.quit();
+    }
     if(ftpDownloads.contains(opID)) {
+        ftpDownloads.removeAll(opID);
         switch (currentStatus) {
         case STATUS_FETCHING_INFO_FILE:
             if(!error) {
@@ -799,17 +881,11 @@ void MainWindow::onFtpOperationEnded(int opID, bool error)
                 }
             }
             else {
-                if(!ui->testReleaseCB->isChecked()) {
                     if(QMessageBox::question(this, "Information file apears not to exist on the server", "Do you want to create one?") == QMessageBox::Yes) {
                         processStatusChange(STATUS_NEW_SYSTEM);
                     }
-                }
-                else
-                {
-                    ui->console->append("ERROR there is no test build available on the server");
-                    processStatusChange(oldStatus);
-                    return;
-                }
+                    else
+                        processStatusChange(oldStatus);
             }
             break;
         case STATUS_PROCESSING_NEW_ITEM:
@@ -836,27 +912,24 @@ void MainWindow::onFtpTransferProgress(qint64 current, qint64 total)
 bool MainWindow::processInformationFile(QByteArray array)
 {
     bool success = false;
-    QMultiHash<bool, xmlParser::softData> dataset = parser->parseXML(QString(array), success);
+    QMultiHash<xmlParser::releaseTypeEnum, xmlParser::softData> dataset = parser->parseXML(QString(array), success);
     if(!success) {
         ui->console->append("XML information file parsing FAILED");
         return false;
     }
     if(releaseTable)
         delete releaseTable;
-    if(oldReleasesTable)
-        delete oldReleasesTable;
-    if(releaseTable)
-        delete releaseTable;
-    if(oldReleasesTable)
-        delete oldReleasesTable;
-    releaseTable = new TableWidgetData(this, ui->featuredReleasesTable, dataset.values(true));
-    oldReleasesTable = new TableWidgetData(this, ui->oldReleasesTable, dataset.values(false));
+    if(oldReleaseTable)
+        delete oldReleaseTable;
+    if(testReleaseTable)
+        delete testReleaseTable;
+    releaseTable = new TableWidgetData(this, ui->featuredReleasesTable, dataset.values(xmlParser::RELEASE_CURRENT));
+    oldReleaseTable = new TableWidgetData(this, ui->oldReleasesTable, dataset.values(xmlParser::RELEASE_OLD));
+    testReleaseTable = new TableWidgetData(this, ui->testReleasesTable, dataset.values(xmlParser::RELEASE_TEST));
     this->fillTable(releaseTable);
-    this->fillTable(oldReleasesTable);
-    if(ui->testReleaseCB->isChecked())
-        processStatusChange(STATUS_EDITING_TEST_RELEASE_FROM_TEST);
-    else
-        processStatusChange(STATUS_EDITING_TEST_RELEASE_FROM_RELEASE);
+    this->fillTable(oldReleaseTable);
+    this->fillTable(testReleaseTable);
+    processStatusChange(STATUS_EDITING_RELEASE);
     return true;
 }
 
@@ -924,6 +997,11 @@ void MainWindow::onXMLParserMessage(QString text)
     ui->console->append(QString("XMLParser:%0").arg(text));
 }
 
+void MainWindow::onftpListInfo(QUrlInfo info)
+{
+    ftpLastListing.append(info);
+}
+
 bool MainWindow::saveDownloadedFile(QByteArray data, QString path, QString fileName)
 {
     if(!QDir(path).exists())
@@ -938,8 +1016,14 @@ bool MainWindow::saveDownloadedFile(QByteArray data, QString path, QString fileN
     return true;
 }
 
-TableWidgetData::TableWidgetData(QObject *parent, QTableWidget *table, QList<xmlParser::softData> data):QObject(parent), table(table), data(data)
+TableWidgetData::TableWidgetData(QObject *parent, QTableWidget *table, QList<xmlParser::softData> data):QObject(parent), table(table)
 {
+    for(int x = 0; x < data.length(); ++x) {
+        TableWidgetData::dataActionStruct temp;
+        temp.data = data.at(x);
+        temp.action = TableWidgetData::ACTION_NONE;
+        dataActionPerItem.insert(x, temp);
+    }
     connect(table, SIGNAL(currentCellChanged(int,int,int,int)), this, SLOT(onCurrentCellChanged(int,int,int,int)));
 }
 
@@ -949,6 +1033,257 @@ void TableWidgetData::onCurrentCellChanged(int x, int y, int xx, int yy)
     Q_UNUSED(xx);
     Q_UNUSED(yy);
     emit currentRowChanged(x);
-    emit currentItemChanged(data.at(table->item(x, 0)->data(Qt::UserRole).toInt()));
+}
+void MainWindow::onPushButtonPressed()
+{
+    QStringList filesToPush;
+    QHash<QString, QString> localFiles;
+    QStringList filesToDelete;
+    QList<TableWidgetData* > workingTablesList;
+    workingTablesList << testReleaseTable << oldReleaseTable << releaseTable;
+    QString filename;
+    foreach(TableWidgetData * workingTable, workingTablesList)
+    {
+        foreach (int i, workingTable->dataActionPerItem.keys()) {
+            switch (workingTable->dataActionPerItem.value(i).action) {
+            case TableWidgetData::ACTION_DELETE_FROM_SERVER:
+                filesToDelete.append(workingTable->dataActionPerItem.value(i).data.releaseLink.toString());
+                if(!workingTable->dataActionPerItem.value(i).data.scriptLink.isEmpty()) {
+                    filesToDelete.append(workingTable->dataActionPerItem.value(i).data.scriptLink.toString());
+                }
+                break;
+            case TableWidgetData::ACTION_COPY_TO_SERVER:
+                filesToPush.append(workingTable->dataActionPerItem.value(i).data.releaseLink.toString());
+                filename = QFileInfo(workingTable->dataActionPerItem.value(i).data.releaseLink.toString()).fileName();
+                localFiles.insert(workingTable->dataActionPerItem.value(i).data.releaseLink.toString(), QDir::temp().absolutePath() + QDir::separator() + "release_builder" + QDir::separator() + "release" + QString::number(i) + QDir::separator() + filename);
+                if(!workingTable->dataActionPerItem.value(i).data.scriptLink.isEmpty()) {
+                    filesToPush.append(workingTable->dataActionPerItem.value(i).data.scriptLink.toString());
+                    filename = QFileInfo(workingTable->dataActionPerItem.value(i).data.scriptLink.toString()).fileName();
+                    localFiles.insert(workingTable->dataActionPerItem.value(i).data.scriptLink.toString(), QDir::temp().absolutePath() + QDir::separator() + "release_builder" + QDir::separator() + "release" + QString::number(i) + QDir::separator() + filename);
+                }
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    QMultiHash<xmlParser::releaseTypeEnum, xmlParser::softData> dataList;
+    foreach (TableWidgetData::dataActionStruct data, releaseTable->dataActionPerItem.values()) {
+        dataList.insert(xmlParser::RELEASE_CURRENT, data.data);
+    }
+    foreach (TableWidgetData::dataActionStruct data, oldReleaseTable->dataActionPerItem.values()) {
+        dataList.insert(xmlParser::RELEASE_OLD, data.data);
+    }
+    foreach (TableWidgetData::dataActionStruct data, testReleaseTable->dataActionPerItem.values()) {
+        dataList.insert(xmlParser::RELEASE_TEST, data.data);
+    }
+    QString xml = parser->convertSoftDataToXMLString(dataList);
+    if(!filesToDelete.isEmpty()) {
+        ui->console->append("GOING TO DELETE FILES:");
+        foreach (QString file, filesToDelete) {
+            ui->console->append(file);
+        }
+    }
+    if(!filesToPush.isEmpty()) {
+        ui->console->append("GOING TO PUSH FILES:");
+        foreach (QString file, filesToPush) {
+            ui->console->append(file);
+        }
+    }
+    if(QMessageBox::question(this, "Please Confirm actions", "Do you really want to perform this actions?") != QMessageBox::Yes)
+        return;
+    if(ftpLogin()) {
+        foreach (QString file, filesToDelete) {
+            ftpOperations.insert(ftp->remove(file), QString("Removing file %0 from server").arg(file));
+        }
+        foreach (QString file, filesToPush) {
+            QFile m_file(localFiles.value(file));
+            if(m_file.open(QIODevice::ReadOnly)) {
+                ui->console->append(QFileInfo(file).path());
+                if(ftpCreateDirectory((QFileInfo(file).path()))) {
+                    qDebug()<<"FILE="<<file;
+                    ftp->cd("~");
+                    ftpOperations.insert(ftp->put(m_file.readAll(), file), QString("Pushing file %0 to %1 on server").arg(localFiles.value(file)).arg(file));
+                }
+                else {
+                    ui->console->append("Failed to create directory");
+                }
+            }
+            else {
+                ui->console->append(QString("ERROR could not open local file %0. Skipping").arg(localFiles.value(file)));
+            }
+        }
+        ui->console->append("Pushing xml information file");
+        ftpOperations.insert(ftp->put(xml.toUtf8(), settings->settings.infoReleaseFilename), QString("Pushing file:%0").arg(settings->settings.infoReleaseFilename));
+        QList<TableWidgetData*> dataTables;
+        dataTables << testReleaseTable << releaseTable << oldReleaseTable;
+        foreach (TableWidgetData *table, dataTables) {
+            foreach (int key, table->dataActionPerItem.keys()) {
+                table->dataActionPerItem[key].action = TableWidgetData::ACTION_NONE;
+            }
+            fillTable(table);
+        }
+    }
 }
 
+
+void MainWindow::onMakeReleaseButtonPressed()
+{
+    QList<TableWidgetData*> tableList;
+    tableList << testReleaseTable << releaseTable << oldReleaseTable;
+    foreach (TableWidgetData *table, tableList) {
+        foreach (TableWidgetData::dataActionStruct data, table->dataActionPerItem.values()) {
+            if(data.action != TableWidgetData::ACTION_NONE) {
+                QMessageBox::warning(this, "Can't make release", "Your working tables still have changes not submited to server, please push them and try again");
+                return;
+            }
+        }
+    }
+    if(QMessageBox::question(this, "Please Confirm actions", "Do you really want to move the current test releases to the ALFA release?") != QMessageBox::Yes)
+        return;
+    QHash<int, TableWidgetData::dataActionStruct> releaseData = releaseTable->dataActionPerItem;
+    QHash<int, TableWidgetData::dataActionStruct> oldReleaseData = oldReleaseTable->dataActionPerItem;
+
+    foreach (int tkey, testReleaseTable->dataActionPerItem.keys()) {
+        foreach (int key, releaseTable->dataActionPerItem.keys()) {
+            if(testReleaseTable->dataActionPerItem.value(tkey).data.type == releaseTable->dataActionPerItem.value(key).data.type &&
+                    testReleaseTable->dataActionPerItem.value(tkey).data.osType == releaseTable->dataActionPerItem.value(key).data.osType &&
+                    testReleaseTable->dataActionPerItem.value(tkey).data.hwType == releaseTable->dataActionPerItem.value(key).data.hwType) {
+                if(testReleaseTable->dataActionPerItem.value(tkey).data.osType == xmlParser::OS_EMBEDED)
+                    ui->console->append(QString("Same %0 file already exists for %1 on current releases moving it to old releases").arg(xmlParser::softTypeToString(testReleaseTable->dataActionPerItem.value(tkey).data.type)).arg(xmlParser::hwTypeToStringHash.value(testReleaseTable->dataActionPerItem.value(tkey).data.hwType)));
+                else
+                    ui->console->append(QString("Same %0 file already exists for %1 on current releases moving it to old releases").arg(xmlParser::softTypeToString(testReleaseTable->dataActionPerItem.value(tkey).data.type)).arg(xmlParser::osTypeToString(testReleaseTable->dataActionPerItem.value(tkey).data.osType)));
+                TableWidgetData::dataActionStruct temp;
+                temp.data = releaseTable->dataActionPerItem.value(key).data;
+                temp.action = TableWidgetData::ACTION_CHANGED_METADATA;
+                oldReleaseData.insert(getFirstFreeIndex(oldReleaseData), temp);
+                releaseData.remove(key);
+                break;
+            }
+        }
+        TableWidgetData::dataActionStruct temp;
+        temp.data = testReleaseTable->dataActionPerItem.value(tkey).data;
+        temp.action = TableWidgetData::ACTION_CHANGED_METADATA;
+        releaseData.insert(getFirstFreeIndex(releaseData), temp);
+    }
+    QString uavHash;
+    bool allEqual = true;
+    ui->console->append("Checking if all release assets share the same UAVO");
+    foreach (TableWidgetData::dataActionStruct data, releaseData.values()) {
+        if(data.data.type != xmlParser::SOFT_UPDATER) {
+            if(uavHash.isEmpty())
+                uavHash = data.data.uavHash;
+            else if(data.data.uavHash != uavHash) {
+                allEqual = false;
+                break;
+            }
+        }
+    }
+    if(!allEqual) {
+        QMessageBox::warning(this, "Can't make release", "There are inconsistencies regarding the UAVO hashes of some release assets");
+        ui->console->append("UAVO Hash inconsistencies found");
+        return;
+    }
+    ui->console->append("No UAVO Hash inconsistencies found");
+    testReleaseTable->dataActionPerItem.clear();
+    releaseTable->dataActionPerItem = releaseData;
+    oldReleaseTable->dataActionPerItem = oldReleaseData;
+    fillTable(testReleaseTable);
+    fillTable(releaseTable);
+    fillTable(oldReleaseTable);
+    QMessageBox::information(this, "Make release succeeded", "Check new tables and push release if everything looks OK");
+}
+
+bool MainWindow::ftpLogin() {
+    ftpCredentials::credentials cred;
+    if(!settings->settings.ftpPassword.isEmpty() && !settings->settings.ftpUserName.isEmpty()) {
+        ui->console->append(QString("Using stored FTP credentials, username=%0").arg(settings->settings.ftpUserName));
+        cred.password = settings->settings.ftpPassword;
+        cred.username = settings->settings.ftpUserName;
+    }
+    else {
+        ftpCredentials *credentials = new ftpCredentials(this);
+        cred = credentials->getCredentials(settings->settings.ftpUserName, settings->settings.ftpPassword);
+        if(cred.remember) {
+            settings->settings.ftpUserName = cred.username;
+            settings->settings.ftpPassword = cred.password;
+            settings->saveSettings();
+        }
+    }
+    if(ftp->state() != QFtp::LoggedIn) {
+        QEventLoop loop;
+        bool statusOK = false;
+        connect(ftp, SIGNAL(stateChanged(int)), &loop, SLOT(quit()));
+        connect(ftp, SIGNAL(commandFinished(int,bool)), &loop, SLOT(quit()));
+        int ftpID = ftp->connectToHost(settings->settings.ftpServerUrl);
+        ftpOperations.insert(ftpID, "Connect to host");
+        while(!statusOK) {
+            loop.exec();
+            if(ftp->error() != QFtp::NoError) {
+                return false;
+            }
+            if(ftp->state() == QFtp::Connected)
+                statusOK = true;
+        }
+        statusOK = false;
+        ftpOperations.insert(ftp->login(cred.username, cred.password), "Logging in to host");
+        while(!statusOK) {
+            loop.exec();
+            if(ftp->error() != QFtp::NoError) {
+                return false;
+            }
+            if(ftp->state() == QFtp::LoggedIn)
+                statusOK = true;
+        }
+    }
+    return true;
+}
+
+bool MainWindow::ftpCreateDirectory(QString dir)
+{
+    int ftpCurrentPathIndexCheck = 0;
+    ftpLastListing.clear();
+    bool keepGoing = true;
+    QStringList dirs = dir.split("/");
+    dirs.insert(0,"~");
+    qDebug() << dirs;
+    dirs.removeAll("");
+    while(keepGoing) {
+        if(ftpCurrentPathIndexCheck < (dirs.length() -1)) {
+            ftpOperations.insert(ftp->cd(dirs.at(ftpCurrentPathIndexCheck)), "CD to " + dirs.at(ftpCurrentPathIndexCheck));
+            ftpLastListing.clear();
+            int opID = ftp->list();
+            ftpDirsCheckOperations.append(opID);
+            lastFtpOperationSuccess = false;
+            ftpOperations.insert(opID, QString("Listing directory %0 contents").arg(dirs.at(ftpCurrentPathIndexCheck)));
+            ftpDirCheckEventLoop.exec();
+            if(!lastFtpOperationSuccess)
+                return false;
+            bool exists = false;
+            foreach (QUrlInfo info, ftpLastListing) {
+                if(info.isDir()) {
+                    qDebug() << "INFO=" << info.name() << dirs.at(ftpCurrentPathIndexCheck + 1);
+                    if(info.name() == dirs.at(ftpCurrentPathIndexCheck + 1)) {
+                        exists = true;
+                    }
+                }
+            }
+            ui->console->append(QString("Checking if directory %0 exists on server:%1").arg(dirs.at(ftpCurrentPathIndexCheck + 1)).arg(exists));
+            if(!exists) {
+                opID = ftp->mkdir(dirs.at(ftpCurrentPathIndexCheck + 1));
+                lastFtpOperationSuccess = false;
+                ftpOperations.insert(opID, QString("Creating directory %0").arg(dirs.at(ftpCurrentPathIndexCheck +1)));
+                ftpMkDirOperations.append(opID);
+                ftpDirCheckEventLoop.exec();
+                if(!lastFtpOperationSuccess)
+                    return false;
+            }
+            ++ftpCurrentPathIndexCheck;
+        }
+        else {
+            keepGoing = false;
+        }
+
+    }
+    return true;
+}

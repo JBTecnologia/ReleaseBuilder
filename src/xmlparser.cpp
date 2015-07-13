@@ -46,12 +46,13 @@ xmlParser::~xmlParser()
 
 }
 
-QMultiHash<bool, xmlParser::softData> xmlParser::parseXML(QString xml, bool &success)
+QMultiHash<xmlParser::releaseTypeEnum, xmlParser::softData> xmlParser::parseXML(QString xml, bool &success)
 {
-    bool isRelease;
+    qDebug() << "Parsing:" << xml;
+    releaseTypeEnum releaseType;
     osTypeEnum osType;
     softTypeEnum softType;
-    QMultiHash<bool, xmlParser::softData> ret;
+    QMultiHash<releaseTypeEnum, xmlParser::softData> ret;
     QDomDocument *doc = new QDomDocument();
     QString error;
     int line = 0;
@@ -64,19 +65,23 @@ QMultiHash<bool, xmlParser::softData> xmlParser::parseXML(QString xml, bool &suc
         emit outputMessage(lines.at(line));
         emit outputMessage(lines.at(line + 1));
         success = false;
-        return QMultiHash<bool, xmlParser::softData>();
+        return QMultiHash<releaseTypeEnum, xmlParser::softData>();
     }
     QDomNode root = doc->firstChild();
     foreach (QDomElement release, nodesToElementList(root.childNodes())) {
-        if(release.tagName() == "current_releases")
-            isRelease = true;
-        else if(release.tagName() == "old_releases")
-            isRelease = false;
+        qDebug() << "Release type:" << release.tagName();
+        if(release.tagName() == "current_release")
+            releaseType = RELEASE_CURRENT;
+        else if(release.tagName() == "old_release")
+            releaseType = RELEASE_OLD;
+        else if(release.tagName() == "test_release")
+            releaseType = RELEASE_TEST;
         else {
             success = false;
-            return QMultiHash<bool, xmlParser::softData>();
+            return QMultiHash<releaseTypeEnum, xmlParser::softData>();
         }
         foreach(QDomElement os, nodesToElementList(release.childNodes())) {
+            qDebug() << "OS:" << os.tagName();
             if(os.tagName() == "win32")
                 osType = OS_WIN32;
             else if(os.tagName() == "win64")
@@ -93,18 +98,21 @@ QMultiHash<bool, xmlParser::softData> xmlParser::parseXML(QString xml, bool &suc
                 osType = OS_EMBEDED;
             else {
                 success = false;
-                return QMultiHash<bool, xmlParser::softData>();
+                return QMultiHash<releaseTypeEnum, xmlParser::softData>();
             }
             foreach (QDomElement soft, nodesToElementList(os.childNodes())) {
+                qDebug() << "Software type:" << soft.tagName();
                 if  (soft.tagName() == "gcs")
                     softType = SOFT_GCS;
-                else if (soft.tagName() == "tbs_agent")
-                    softType = SOFT_TBS_AGENT;
+                else if (soft.tagName() == "slim_gcs")
+                    softType = SOFT_SLIM_GCS;
                 else if (soft.tagName() == "updater")
                     softType = SOFT_UPDATER;
                 else if (soft.tagName().startsWith("t")) {
                     foreach (QDomElement embeded, nodesToElementList(soft.childNodes())) {
+                        qDebug() << "T:" << embeded.tagName();
                         foreach (QDomElement s, nodesToElementList(embeded.childNodes())) {
+                            qDebug() << "T Softype:" << embeded.tagName();
                             if(embeded.tagName() == "firmware")
                                 softType = SOFT_FIRMWARE;
                             else if(embeded.tagName() == "settings")
@@ -113,19 +121,19 @@ QMultiHash<bool, xmlParser::softData> xmlParser::parseXML(QString xml, bool &suc
                                 softType = SOFT_BOOTLOADER;
                             else {
                                 success = false;
-                                return QMultiHash<bool, xmlParser::softData>();
+                                return QMultiHash<releaseTypeEnum, xmlParser::softData>();
                             }
-                            ret.insert(isRelease, assembleSoftData(osType, softType, soft.tagName().remove(0, 1).toInt(), s));
+                            ret.insert(releaseType, assembleSoftData(osType, softType, soft.tagName().remove(0, 1).toInt(), s));
                         }
                     }
                 }
                 else {
                     success = false;
-                    return QMultiHash<bool, xmlParser::softData>();
+                    return QMultiHash<releaseTypeEnum, xmlParser::softData>();
                 }
                 if ((softType != SOFT_FIRMWARE) && (softType != SOFT_SETTINGS) && (softType != SOFT_BOOTLOADER)) {
                     foreach (QDomElement child, nodesToElementList(soft.childNodes())) {
-                        ret.insert(isRelease, assembleSoftData(osType, softType, 0, child));
+                        ret.insert(releaseType, assembleSoftData(osType, softType, 0, child));
                     }
                 }
             }
@@ -208,10 +216,10 @@ void xmlParser::processSoftType(QDomDocument *doc, QDomElement &element, QList<x
         element.appendChild(Gcs);
         xmlAddFields(doc, Gcs, groupBySoftType.values(SOFT_GCS));
     }
-    if(groupBySoftType.values(SOFT_TBS_AGENT).length()) {
-        QDomElement Tbs = doc->createElement("tbs_agent");
+    if(groupBySoftType.values(SOFT_SLIM_GCS).length()) {
+        QDomElement Tbs = doc->createElement("slim_gcs");
         element.appendChild(Tbs);
-        xmlAddFields(doc, Tbs, groupBySoftType.values(SOFT_TBS_AGENT));
+        xmlAddFields(doc, Tbs, groupBySoftType.values(SOFT_SLIM_GCS));
     }
     if(groupBySoftType.values(SOFT_UPDATER).length()) {
         QDomElement Updater = doc->createElement("updater");
@@ -283,22 +291,28 @@ void xmlParser::xmlAddFields(QDomDocument *doc, QDomElement &element, QList<xmlP
     }
 }
 
-QString xmlParser::convertSoftDataToXMLString(QMultiHash<bool, xmlParser::softData> list)
+QString xmlParser::convertSoftDataToXMLString(QMultiHash<xmlParser::releaseTypeEnum, xmlParser::softData> list)
 {
-    QList<xmlParser::softData> releases = list.values(true);
-    QList<xmlParser::softData> oldReleases = list.values(false);
+    QList<xmlParser::softData> releases = list.values(RELEASE_CURRENT);
+    QList<xmlParser::softData> oldReleases = list.values(RELEASE_OLD);
+    QList<xmlParser::softData> testReleases = list.values(RELEASE_TEST);
     QDomDocument *doc = new QDomDocument("tauLabssoftware");
     QDomElement root = doc->createElement("root");
     doc->appendChild(root);
     if(releases.length()) {
-        QDomElement releaseRoot = doc->createElement("current_releases");
+        QDomElement releaseRoot = doc->createElement("current_release");
         root.appendChild(releaseRoot);
         processOSTypeList(doc, &releaseRoot, releases);
     }
     if(oldReleases.length()) {
-        QDomElement oldReleasesRoot = doc->createElement("old_releases");
+        QDomElement oldReleasesRoot = doc->createElement("old_release");
         root.appendChild(oldReleasesRoot);
         processOSTypeList(doc, &oldReleasesRoot, oldReleases);
+    }
+    if(testReleases.length()) {
+        QDomElement testReleasesRoot = doc->createElement("test_release");
+        root.appendChild(testReleasesRoot);
+        processOSTypeList(doc, &testReleasesRoot, testReleases);
     }
     QString ret = doc->toString(4);
     delete doc;
@@ -321,9 +335,9 @@ QString xmlParser::osTypeToString(xmlParser::osTypeEnum type)
     return xmlParser::osTypeToStringHash.value(type, "Unknown");
 }
 
-QMultiHash<bool, xmlParser::softData> xmlParser::temp()
+QMultiHash<xmlParser::releaseTypeEnum, xmlParser::softData> xmlParser::temp()
 {
-    QMultiHash<bool, xmlParser::softData> list;
+    QMultiHash<releaseTypeEnum, xmlParser::softData> list;
     xmlParser::softData d0;
     xmlParser::softData d1;
     xmlParser::softData d2;
@@ -344,7 +358,7 @@ QMultiHash<bool, xmlParser::softData> xmlParser::temp()
     d0.scriptLink = QUrl("d0scriptlink");
     d0.type = SOFT_FIRMWARE;/////////////////////////////////////
     d0.uavHash = "d0uavohash";
-    list.insert(false, d0);
+    list.insert(RELEASE_OLD, d0);
 
     d1.date = QDate(2015, 2, 2);
     d1.hwType = 0xAAAB;
@@ -356,7 +370,7 @@ QMultiHash<bool, xmlParser::softData> xmlParser::temp()
     d1.scriptLink = QUrl("d1scriptlink");
     d1.type = SOFT_GCS;
     d1.uavHash = "d1uavohash";
-    list.insert(false, d1);
+    list.insert(RELEASE_OLD, d1);
 
     d2.date = QDate(2015, 2, 1);
     d2.hwType = 0xBBBB;//48059
@@ -368,7 +382,7 @@ QMultiHash<bool, xmlParser::softData> xmlParser::temp()
     d2.scriptLink = QUrl("d2scriptlink");
     d2.type = SOFT_FIRMWARE;///////////////////////////////
     d2.uavHash = "d2uavohash";
-    list.insert(true, d2);
+    list.insert(RELEASE_CURRENT, d2);
 
     d4.date = QDate(2015, 11, 11);
     d4.hwType = 0xBBBB;//48059
@@ -380,7 +394,7 @@ QMultiHash<bool, xmlParser::softData> xmlParser::temp()
     d4.scriptLink = QUrl("d4scriptlink");
     d4.type = SOFT_SETTINGS;///////////////////////////////
     d4.uavHash = "d4uavohash";
-    list.insert(true, d4);
+    list.insert(RELEASE_CURRENT, d4);
 
     d3.date = QDate(2015, 2, 11);
     d3.hwType = 0xAAAB;
@@ -390,13 +404,13 @@ QMultiHash<bool, xmlParser::softData> xmlParser::temp()
     d3.packageLink = QUrl("linuxd1packageLink");
     d3.releaseLink = QUrl("linuxd1releaselink");
     d3.scriptLink = QUrl("linuxd1scriptlink");
-    d3.type = SOFT_TBS_AGENT;
+    d3.type = SOFT_SLIM_GCS;
     d3.uavHash = "linuxd1uavohash";
-    list.insert(true, d3);
+    list.insert(RELEASE_CURRENT, d3);
     tempv = list;
     QString out = convertSoftDataToXMLString(list);
     bool success;
-    QMultiHash<bool, xmlParser::softData> parsed = parseXML(out, success);
+    QMultiHash<releaseTypeEnum, xmlParser::softData> parsed = parseXML(out, success);
     return parsed;
 }
 
@@ -438,7 +452,7 @@ QHash<xmlParser::softTypeEnum, QString> xmlParser::softHashInit()
     temp.insert(SOFT_FIRMWARE, "Firmware");
     temp.insert(SOFT_GCS, "GCS");
     temp.insert(SOFT_SETTINGS, "Settings");
-    temp.insert(SOFT_TBS_AGENT, "TBS Agent");
+    temp.insert(SOFT_SLIM_GCS, "TBS Agent");
     temp.insert(SOFT_UPDATER, "Updater");
     temp.insert(SOFT_BOOTLOADER, "Bootloader");
     return temp;
@@ -451,11 +465,11 @@ QHash<int, QString> xmlParser::hwTypeInit()
     temp.insert(137, "SparkyBGC");
     temp.insert(129, "Freedom");
     temp.insert(3, "PipXtreme");
-    temp.insert(145, "colibri");
-    temp.insert(131, "flyingf3");
-    temp.insert(132, "flyingf4");
-    temp.insert(133, "discoveryf4");
-    temp.insert(134, "quanton");
+    temp.insert(145, "Colibri");
+    temp.insert(131, "Flyingf3");
+    temp.insert(132, "Flyingf4");
+    temp.insert(133, "Discoveryf4");
+    temp.insert(134, "Quanton");
     temp.insert(4, "CopterControl");
     temp.insert(3, "PipXtreme");
     temp.insert(127, "Revolution");

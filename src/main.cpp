@@ -1,7 +1,7 @@
 /**
  ******************************************************************************
  * @file       main.cpp
- * @author     Tau Labs, http://taulabs.org, Copyright (C) 2014
+ * @author     Tau Labs, http://taulabs.org, Copyright (C) 2015
  * @addtogroup [Group]
  * @{
  * @addtogroup

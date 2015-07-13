@@ -37,8 +37,9 @@ class xmlParser : public QObject
 {
     Q_OBJECT
 public:
-    enum softTypeEnum {SOFT_GCS, SOFT_TBS_AGENT, SOFT_UPDATER, SOFT_FIRMWARE, SOFT_BOOTLOADER, SOFT_SETTINGS};
+    enum softTypeEnum {SOFT_GCS, SOFT_SLIM_GCS, SOFT_UPDATER, SOFT_FIRMWARE, SOFT_BOOTLOADER, SOFT_SETTINGS};
     enum osTypeEnum {OS_WIN32, OS_WIN64, OS_OSX32, OS_OSX64, OS_LINUX32, OS_LINUX64, OS_EMBEDED};
+    enum releaseTypeEnum {RELEASE_CURRENT, RELEASE_TEST, RELEASE_OLD};
     struct softData {
         softTypeEnum type;
         osTypeEnum osType;
@@ -53,17 +54,17 @@ public:
     };
     xmlParser(QObject *parent = NULL);
     ~xmlParser();
-    QMultiHash<bool, softData> parseXML(QString xml, bool &success);
+    QMultiHash<releaseTypeEnum, softData> parseXML(QString xml, bool &success);
     void processOSTypeList(QDomDocument *doc, QDomElement *element, QList<xmlParser::softData> data);
     void processSoftType(QDomDocument *doc, QDomElement &element, QList<xmlParser::softData> data);
-    QString convertSoftDataToXMLString(QMultiHash<bool, softData> list);
+    QString convertSoftDataToXMLString(QMultiHash<releaseTypeEnum, softData> list);
     static QList<xmlParser::osTypeEnum> osTypesList();
     static QString softTypeToString(xmlParser::softTypeEnum type);
     static QString osTypeToString(xmlParser::osTypeEnum type);
     static QHash<xmlParser::softTypeEnum, QString> softTypeToStringHash;
     static QHash<xmlParser::osTypeEnum, QString> osTypeToStringHash;
     static QHash<int, QString> hwTypeToStringHash;
-    QMultiHash<bool, xmlParser::softData> temp();
+    QMultiHash<releaseTypeEnum, softData> temp();
 
 
     QHash<xmlParser::osTypeEnum, QString> osHashInit();
@@ -78,7 +79,7 @@ private:
     QList<QDomElement> nodesToElementList(QDomNodeList list);
     QDomDocument tempDoc;
     QByteArray array;
-    QMultiHash<bool, xmlParser::softData> tempv;
+    QMultiHash<xmlParser::releaseTypeEnum, xmlParser::softData> tempv;
 
 };
 #endif // XMLPARSER_H
